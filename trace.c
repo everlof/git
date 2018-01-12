@@ -158,7 +158,7 @@ static void trace_argv_vprintf_fl(const char *file, int line,
 
 	strbuf_vaddf(&buf, format, ap);
 
-	sq_quote_argv(&buf, argv, 0);
+	sq_quote_argv(&buf, argv);
 	print_trace_line(&trace_default_key, &buf);
 }
 
@@ -374,7 +374,7 @@ void trace_run_command(const struct child_process *cp)
 	if (cp->git_cmd)
 		strbuf_addstr(&buf, " git");
 
-	sq_quote_argv(&buf, cp->argv, 0);
+	sq_quote_argv(&buf, cp->argv);
 	print_trace_line(&trace_default_key, &buf);
 }
 
@@ -532,6 +532,6 @@ void trace_command_performance(const char **argv)
 		atexit(print_command_performance_atexit);
 
 	strbuf_reset(&command_line);
-	sq_quote_argv(&command_line, argv, 0);
+	sq_quote_argv(&command_line, argv);
 	command_start_time = getnanotime();
 }
