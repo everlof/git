@@ -1008,6 +1008,262 @@ static struct ref *do_fetch_pack(struct fetch_pack_args *args,
 	return ref;
 }
 
+static void add_wants(const struct ref *wants, struct strbuf *req_buf)
+{
+	for (; wants; wants = wants->next) {
+		const struct object_id *remote = &wants->old_oid;
+		const char *remote_hex;
+		struct object *o;
+
+		/*
+		 * If that object is complete (i.e. it is an ancestor of a
+		 * local ref), we tell them we have it but do not have to
+		 * tell them about its ancestors, which they already know
+		 * about.
+		 *
+		 * We use lookup_object here because we are only
+		 * interested in the case we *know* the object is
+		 * reachable and we have already scanned it.
+		 */
+		if (((o = lookup_object(remote->hash)) != NULL) &&
+		    (o->flags & COMPLETE)) {
+			continue;
+		}
+
+		remote_hex = oid_to_hex(remote);
+		packet_buf_write(req_buf, "want %s\n", remote_hex);
+	}
+}
+
+static int add_haves(struct strbuf *req_buf, int *in_vain)
+{
+	int ret = 0;
+	int haves_added = 0;
+	const struct object_id *oid;
+
+	while ((oid = get_rev())) {
+		packet_buf_write(req_buf, "have %s\n", oid_to_hex(oid));
+		if (++haves_added >= INITIAL_FLUSH)
+			break;
+	};
+
+	*in_vain += haves_added;
+	if (!haves_added || *in_vain >= MAX_IN_VAIN) {
+		/* Send Done */
+		packet_buf_write(req_buf, "done\n");
+		ret = 1;
+	}
+
+	return ret;
+}
+
+static int send_haves(int fd_out, int *in_vain)
+{
+	int ret = 0;
+	struct strbuf req_buf = STRBUF_INIT;
+
+	ret = add_haves(&req_buf, in_vain);
+
+	/* Send request */
+	packet_buf_flush(&req_buf);
+	write_or_die(fd_out, req_buf.buf, req_buf.len);
+
+	strbuf_release(&req_buf);
+	return ret;
+}
+
+static int send_fetch_request(int fd_out, const struct fetch_pack_args *args,
+			      const struct ref *wants, struct oidset *common,
+			      int *in_vain)
+{
+	int ret = 0;
+	struct strbuf req_buf = STRBUF_INIT;
+
+	packet_buf_write(&req_buf, "command=fetch");
+	packet_buf_write(&req_buf, "agent=%s", git_user_agent_sanitized());
+	if (args->stateless_rpc)
+		packet_buf_write(&req_buf, "stateless-rpc=true");
+
+	packet_buf_delim(&req_buf);
+	if (args->use_thin_pack)
+		packet_buf_write(&req_buf, "thin-pack");
+	if (args->no_progress)
+		packet_buf_write(&req_buf, "no-progress");
+	if (args->include_tag)
+		packet_buf_write(&req_buf, "include-tag");
+	if (prefer_ofs_delta)
+		packet_buf_write(&req_buf, "ofs-delta");
+
+	/* add wants */
+	add_wants(wants, &req_buf);
+
+	/*
+	 * If we are running stateless-rpc we need to add all the common
+	 * commits we've found in previous rounds
+	 */
+	if (args->stateless_rpc) {
+		struct oidset_iter iter;
+		const struct object_id *oid;
+		oidset_iter_init(common, &iter);
+
+		while ((oid = oidset_iter_next(&iter))) {
+			packet_buf_write(&req_buf, "have %s\n", oid_to_hex(oid));
+		}
+	}
+
+	/* Add initial haves */
+	ret = add_haves(&req_buf, in_vain);
+
+	/* Send request */
+	packet_buf_flush(&req_buf);
+	write_or_die(fd_out, req_buf.buf, req_buf.len);
+
+	strbuf_release(&req_buf);
+	return ret;
+}
+
+static enum ack_type process_ack(const char *line, struct object_id *oid)
+{
+	const char *arg;
+
+	if (!strcmp(line, "NAK"))
+		return NAK;
+	if (skip_prefix(line, "ACK ", &arg)) {
+		if (!parse_oid_hex(arg, oid, &arg)) {
+			if (strstr(arg, "continue"))
+				return ACK_continue;
+			if (strstr(arg, "common"))
+				return ACK_common;
+			if (strstr(arg, "ready"))
+				return ACK_ready;
+			return ACK;
+		}
+	}
+	if (skip_prefix(line, "ERR ", &arg))
+		die(_("remote error: %s"), arg);
+	die(_("git fetch-pack: expected ACK/NAK, got '%s'"), line);
+}
+
+static int process_acks(struct packet_reader *reader, struct oidset *common)
+{
+	int got_ready = 0;
+	int got_common = 0;
+	while (packet_reader_read(reader) == PACKET_READ_NORMAL) {
+		struct object_id oid;
+		struct commit *commit;
+		enum ack_type ack = process_ack(reader->line, &oid);
+
+		switch (ack) {
+		case ACK_ready:
+			clear_prio_queue(&rev_list);
+			got_ready = 1;
+			/* fallthrough */
+		case ACK_common:
+			oidset_insert(common, &oid);
+			commit = lookup_commit(&oid);
+			mark_common(commit, 0, 1);
+			got_common = 1;
+			break;
+		case NAK:
+			break;
+		case ACK:
+		case ACK_continue:
+			die("ACK/ACK_continue not supported");
+		}
+	}
+
+	if (reader->status != PACKET_READ_FLUSH &&
+	    reader->status != PACKET_READ_DELIM)
+		die("Error during processing acks: %d", reader->status);
+
+	/* return 0 if no common, 1 if there are common, or 2 if ready */
+	return got_ready + got_common;
+}
+
+#define FETCH_CHECK_LOCAL 0
+#define FETCH_SEND_REQUEST 1
+#define FETCH_PROCESS_ACKS 2
+#define FETCH_SEND_HAVES 3
+#define FETCH_GET_PACK 4
+#define FETCH_DONE 5
+
+static struct ref *do_fetch_pack_v2(struct fetch_pack_args *args,
+				    int fd[2],
+				    const struct ref *orig_ref,
+				    struct ref **sought, int nr_sought,
+				    char **pack_lockfile)
+{
+	struct ref *ref = copy_ref_list(orig_ref);
+	int state = FETCH_CHECK_LOCAL;
+	struct oidset common = OIDSET_INIT;
+	struct packet_reader reader;
+	int in_vain = 0;
+	packet_reader_init(&reader, fd[0], NULL, 0,
+			   PACKET_READ_CHOMP_NEWLINE);
+
+	while (state != FETCH_DONE) {
+		switch (state) {
+		case FETCH_CHECK_LOCAL:
+			sort_ref_list(&ref, ref_compare_name);
+			QSORT(sought, nr_sought, cmp_ref_by_name);
+
+			/* v2 supports these by default */
+			allow_unadvertised_object_request |= ALLOW_REACHABLE_SHA1;
+			use_sideband = 2;
+
+			/* Filter 'ref' by 'sought' and those that aren't local */
+			if (everything_local(args, &ref, sought, nr_sought))
+				state = FETCH_DONE;
+			else
+				state = FETCH_SEND_REQUEST;
+			break;
+		case FETCH_SEND_REQUEST:
+			if (send_fetch_request(fd[1], args, ref, &common, &in_vain))
+				state = FETCH_GET_PACK;
+			else
+				state = FETCH_PROCESS_ACKS;
+			break;
+		case FETCH_PROCESS_ACKS:
+			/* Process ACKs/NAKs */
+			switch (process_acks(&reader, &common)) {
+			case 2:
+				state = FETCH_GET_PACK;
+				break;
+			case 1:
+				in_vain = 0;
+				/* fallthrough */
+			default:
+				if (args->stateless_rpc)
+					state = FETCH_SEND_REQUEST;
+				else
+					state = FETCH_SEND_HAVES;
+				break;
+			}
+			break;
+		case FETCH_SEND_HAVES:
+			if (send_haves(fd[1], &in_vain))
+				state = FETCH_GET_PACK;
+			else
+				state = FETCH_PROCESS_ACKS;
+			break;
+		case FETCH_GET_PACK:
+			/* get the pack */
+			if (get_pack(args, fd, pack_lockfile))
+				die(_("git fetch-pack: fetch failed."));
+
+			state = FETCH_DONE;
+			break;
+		case FETCH_DONE:
+			break;
+		default:
+			die("invalid state");
+		}
+	}
+
+	oidset_clear(&common);
+	return ref;
+}
+
 static void fetch_pack_config(void)
 {
 	git_config_get_int("fetch.unpacklimit", &fetch_unpack_limit);
@@ -1153,7 +1409,8 @@ struct ref *fetch_pack(struct fetch_pack_args *args,
 		       const char *dest,
 		       struct ref **sought, int nr_sought,
 		       struct oid_array *shallow,
-		       char **pack_lockfile)
+		       char **pack_lockfile,
+		       enum protocol_version version)
 {
 	struct ref *ref_cpy;
 	struct shallow_info si;
@@ -1167,8 +1424,12 @@ struct ref *fetch_pack(struct fetch_pack_args *args,
 		die(_("no matching remote head"));
 	}
 	prepare_shallow_info(&si, shallow);
-	ref_cpy = do_fetch_pack(args, fd, ref, sought, nr_sought,
-				&si, pack_lockfile);
+	if (version == protocol_v2)
+		ref_cpy = do_fetch_pack_v2(args, fd, ref, sought, nr_sought,
+					   pack_lockfile);
+	else
+		ref_cpy = do_fetch_pack(args, fd, ref, sought, nr_sought,
+					&si, pack_lockfile);
 	reprepare_packed_git();
 	update_shallow(args, sought, nr_sought, &si);
 	clear_shallow_info(&si);

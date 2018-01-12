@@ -1,0 +1,131 @@
+ Git Wire Protocol, Version 2
+==============================
+
+This document presents a specification for a version 2 of Git's wire
+protocol.  Protocol v2 will improve upon v1 in the following ways:
+
+  * Instead of multiple service names, multiple commands will be
+    supported by a single service.
+  * Easily extendable as capabilities are moved into their own section
+    of the protocol, no longer being hidden behind a NUL byte and
+    limited by the size of a pkt-line (as there will be a single
+    capability per pkt-line).
+  * Separate out other information hidden behind NUL bytes (e.g. agent
+    string as a capability and symrefs can be requested using 'ls-refs')
+  * Reference advertisement will be omitted unless explicitly requested
+  * ls-refs command to explicitly request some refs
+
+ Detailed Design
+=================
+
+A client can request to speak protocol v2 by sending `version=2` in the
+side-channel `GIT_PROTOCOL` in the initial request to the server.
+
+In protocol v2 communication is command oriented.  When first contacting a
+server a list of capabilities will advertised.  Some of these capabilities
+will be commands which a client can request be executed.  Once a command
+has completed, a client can reuse the connection and request that other
+commands be executed.
+
+ Special Packets
+-----------------
+
+In protocol v2 these special packets will have the following semantics:
+
+  * '0000' Flush Packet (flush-pkt) - indicates the end of a message
+  * '0001' Delimiter Packet (delim-pkt) - separates sections of a message
+
+ Capability Advertisement
+--------------------------
+
+A server which decides to communicate (based on a request from a client)
+using protocol version 2, notifies the client by sending a version string
+in its initial response followed by an advertisement of its capabilities.
+Each capability is a key with an optional value.  Clients must ignore all
+unknown keys.  Semantics of unknown values are left to the definition of
+each key.  Some capabilities will describe commands which can be requested
+to be executed by the client.
+
+    capability-advertisement = protocol-version
+			       capability-list
+			       flush-pkt
+
+    protocol-version = PKT-LINE("version 2" LF)
+    capability-list = *capability
+    capability = PKT-LINE(key[=value] LF)
+
+    key = 1*CHAR
+    value = 1*CHAR
+    CHAR = 1*(ALPHA / DIGIT / "-" / "_")
+
+A client then responds to select the command it wants with any particular
+capabilities or arguments.  There is then an optional section where the
+client can provide any command specific parameters or queries.
+
+    command-request = command
+		      capability-list
+		      (command-args)
+		      flush-pkt
+    command = PKT-LINE("command=" key LF)
+    command-args = delim-pkt
+		   *arg
+    arg = 1*CHAR
+
+The server will then check to ensure that the client's request is
+comprised of a valid command as well as valid capabilities which were
+advertised.  If the request is valid the server will then execute the
+command.
+
+A particular command can last for as many rounds as are required to
+complete the service (multiple for negotiation during fetch or no
+additional trips in the case of ls-refs).
+
+When finished a client should send an empty request of just a flush-pkt to
+terminate the connection.
+
+ Commands in v2
+~~~~~~~~~~~~~~~~
+
+Commands are the core actions that a client wants to perform (fetch, push,
+etc).  Each command will be provided with a list capabilities and
+arguments as requested by a client.
+
+ Ls-refs
+---------
+
+Ls-refs is the command used to request a reference advertisement in v2.
+Unlike the current reference advertisement, ls-refs takes in parameters
+which can be used to limit the refs sent from the server.
+
+Ls-ref takes in the following parameters wraped in packet-lines:
+
+  symrefs: In addition to the object pointed by it, show the underlying
+	   ref pointed by it when showing a symbolic ref.
+  peel: Show peeled tags.
+  ref-pattern <pattern>: When specified, only references matching the
+			 given patterns are displayed.
+
+The output of ls-refs is as follows:
+
+    output = *ref
+	     flush-pkt
+    ref = PKT-LINE((tip | peeled) LF)
+    tip = obj-id SP refname (SP symref-target)
+    peeled = obj-id SP refname "^{}"
+
+    symref = PKT-LINE("symref" SP symbolic-ref SP resolved-ref LF)
+    shallow = PKT-LINE("shallow" SP obj-id LF)
+
+ Fetch
+-------
+
+Fetch will need to be a modified version of the v1 fetch protocol.  Some
+potential areas for improvement are: Ref-in-want, CDN offloading,
+Fetch-options.
+
+Since we'll have an 'ls-ref' service we can eliminate the need of fetch
+to perform a ref-advertisement, instead a client can run the 'ls-refs'
+service first, in order to find out what refs the server has, and then
+request those refs directly using the fetch service.
+
+//TODO Flesh out the design
