@@ -4,6 +4,8 @@
 #include "git-compat-util.h"
 #include "strbuf.h"
 
+struct child_process;
+
 struct trace_key {
 	const char * const key;
 	int fd;
@@ -17,6 +19,7 @@ extern struct trace_key trace_default_key;
 extern struct trace_key trace_perf_key;
 
 extern void trace_repo_setup(const char *prefix);
+extern void trace_run_command(const struct child_process *cp);
 extern int trace_want(struct trace_key *key);
 extern void trace_disable(struct trace_key *key);
 extern uint64_t getnanotime(void);

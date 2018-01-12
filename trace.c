@@ -23,6 +23,7 @@
 
 #include "cache.h"
 #include "quote.h"
+#include "run-command.h"
 
 struct trace_key trace_default_key = { "GIT_TRACE", 0, 0, 0 };
 struct trace_key trace_perf_key = TRACE_KEY_INIT(PERFORMANCE);
@@ -271,6 +272,20 @@ void trace_performance_fl(const char *file, int line, uint64_t nanos,
 
 #endif /* HAVE_VARIADIC_MACROS */
 
+
+void trace_run_command(const struct child_process *cp)
+{
+	struct strbuf buf = STRBUF_INIT;
+
+	if (!prepare_trace_line(__FILE__, __LINE__,
+				&trace_default_key, &buf))
+		return;
+
+	strbuf_addf(&buf, "trace: run_command:");
+
+	sq_quote_argv(&buf, cp->argv, 0);
+	print_trace_line(&trace_default_key, &buf);
+}
 
 static const char *quote_crnl(const char *path)
 {
