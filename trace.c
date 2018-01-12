@@ -158,7 +158,7 @@ static void trace_argv_vprintf_fl(const char *file, int line,
 
 	strbuf_vaddf(&buf, format, ap);
 
-	sq_quote_argv(&buf, argv);
+	sq_quote_argv_pretty(&buf, argv);
 	print_trace_line(&trace_default_key, &buf);
 }
 
@@ -341,7 +341,7 @@ static void concatenate_env(struct strbuf *dst, const char *const *deltaenv)
 			continue;
 
 		strbuf_addf(dst, " %s=", env);
-		sq_quote_buf(dst, p);
+		sq_quote_buf_pretty(dst, p);
 	}
 	string_list_clear(&envs, 0);
 }
@@ -360,7 +360,7 @@ void trace_run_command(const struct child_process *cp)
 
 	if (cp->dir) {
 		strbuf_addstr(&buf, " cd ");
-		sq_quote_buf(&buf, cp->dir);
+		sq_quote_buf_pretty(&buf, cp->dir);
 		strbuf_addch(&buf, ';');
 	}
 
@@ -374,7 +374,7 @@ void trace_run_command(const struct child_process *cp)
 	if (cp->git_cmd)
 		strbuf_addstr(&buf, " git");
 
-	sq_quote_argv(&buf, cp->argv);
+	sq_quote_argv_pretty(&buf, cp->argv);
 	print_trace_line(&trace_default_key, &buf);
 }
 
@@ -532,6 +532,6 @@ void trace_command_performance(const char **argv)
 		atexit(print_command_performance_atexit);
 
 	strbuf_reset(&command_line);
-	sq_quote_argv(&command_line, argv);
+	sq_quote_argv_pretty(&command_line, argv);
 	command_start_time = getnanotime();
 }
