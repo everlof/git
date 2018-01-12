@@ -272,76 +272,50 @@ void trace_performance_fl(const char *file, int line, uint64_t nanos,
 
 #endif /* HAVE_VARIADIC_MACROS */
 
-static void sort_deltaenv(struct string_list *envs,
-			  const char *const *deltaenv)
+static void concatenate_env(struct strbuf *dst, const char *const *deltaenv)
 {
-	struct strbuf key = STRBUF_INIT;
+	struct string_list envs = STRING_LIST_INIT_DUP;
 	const char *const *e;
+	int i;
 
+	/* Last one wins... */
 	for (e = deltaenv; e && *e; e++) {
+		struct strbuf key = STRBUF_INIT;
 		char *equals = strchr(*e, '=');
 
 		if (equals) {
 			strbuf_reset(&key);
 			strbuf_add(&key, *e, equals - *e);
-			string_list_append(envs, key.buf)->util = equals + 1;
+			string_list_insert(&envs, key.buf)->util = equals + 1;
 		} else {
-			string_list_append(envs, *e)->util = NULL;
+			string_list_insert(&envs, *e)->util = NULL;
 		}
 	}
-	string_list_sort(envs);
-	strbuf_release(&key);
-}
 
-
-static void concatenate_env(struct strbuf *dst, const char *const *deltaenv)
-{
-	struct string_list envs = STRING_LIST_INIT_DUP;
-	int i;
-
-	/*
-	 * Construct a sorted string list consisting of the delta
-	 * env. We need this to detect the case when the same var is
-	 * deleted first, then added again.
-	 */
-	sort_deltaenv(&envs, deltaenv);
-
-	/*
-	 * variable deletion first because it's printed like separate
-	 * shell commands
-	 */
+	/* series of "unset X; unset Y;..." */
 	for (i = 0; i < envs.nr; i++) {
-		const char *env = envs.items[i].string;
-		const char *p = envs.items[i].util;
+		const char *var = envs.items[i].string;
+		const char *val = envs.items[i].util;
 
-		if (p || !getenv(env))
+		if (val)
 			continue;
-
-		/*
-		 * Do we have a sequence of "unset GIT_DIR; GIT_DIR=foo"?
-		 * Then don't bother with the unset thing.
-		 */
-		if (i + 1 < envs.nr &&
-		    !strcmp(env, envs.items[i + 1].string))
-			continue;
-
-		strbuf_addf(dst, " unset %s;", env);
+		if (getenv(var))
+			strbuf_addf(dst, " unset %s;", var);
 	}
 
+	/* ... followed by "A=B C=D ..." */
 	for (i = 0; i < envs.nr; i++) {
-		const char *env = envs.items[i].string;
-		const char *p = envs.items[i].util;
+		const char *var = envs.items[i].string;
+		const char *val = envs.items[i].util;
 		const char *old_value;
 
-		if (!p)
+		if (!val)
 			continue;
-
-		old_value = getenv(env);
-		if (old_value && !strcmp(old_value, p))
+		old_value = getenv(var);
+		if (old_value && !strcmp(old_value, val))
 			continue;
-
-		strbuf_addf(dst, " %s=", env);
-		sq_quote_buf_pretty(dst, p);
+		strbuf_addf(dst, " %s=", var);
+		sq_quote_buf_pretty(dst, val);
 	}
 	string_list_clear(&envs, 0);
 }
