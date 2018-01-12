@@ -273,6 +273,24 @@ void trace_performance_fl(const char *file, int line, uint64_t nanos,
 #endif /* HAVE_VARIADIC_MACROS */
 
 
+static void concatenate_env(struct strbuf *dst, const char *const *envs)
+{
+	int i;
+
+	for (i = 0; envs[i]; i++) {
+		const char *env = envs[i];
+		const char *p = strchr(env, '=');
+
+		if (!p) /* ignore var deletion for now */
+			continue;
+		p++;
+
+		strbuf_addch(dst, ' ');
+		strbuf_add(dst, env, p - env);
+		sq_quote_buf(dst, p);
+	}
+}
+
 void trace_run_command(const struct child_process *cp)
 {
 	struct strbuf buf = STRBUF_INIT;
@@ -281,7 +299,16 @@ void trace_run_command(const struct child_process *cp)
 				&trace_default_key, &buf))
 		return;
 
+	strbuf_grow(&buf, 255);
+
 	strbuf_addf(&buf, "trace: run_command:");
+
+	/*
+	 * The caller is responsible for initializing cp->env from
+	 * cp->env_array if needed. We only check one place.
+	 */
+	if (cp->env)
+		concatenate_env(&buf, cp->env);
 
 	if (cp->git_cmd)
 		strbuf_addstr(&buf, " git");
