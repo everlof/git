@@ -136,6 +136,7 @@ void wt_status_prepare(struct wt_status *s)
 	s->ignored.strdup_strings = 1;
 	s->show_branch = -1;  /* unspecified */
 	s->show_stash = 0;
+	s->ahead_behind_flags = AHEAD_BEHIND_UNSPECIFIED;
 	s->display_comment_prefix = 0;
 }
 
@@ -1032,7 +1033,7 @@ static void wt_longstatus_print_tracking(struct wt_status *s)
 	if (!skip_prefix(s->branch, "refs/heads/", &branch_name))
 		return;
 	branch = branch_get(branch_name);
-	if (!format_tracking_info(branch, &sb))
+	if (!format_tracking_info(branch, &sb, s->ahead_behind_flags))
 		return;
 
 	i = 0;
@@ -1793,7 +1794,7 @@ static void wt_shortstatus_print_tracking(struct wt_status *s)
 	const char *base;
 	char *short_base;
 	const char *branch_name;
-	int num_ours, num_theirs;
+	int num_ours, num_theirs, sti;
 	int upstream_is_gone = 0;
 
 	color_fprintf(s->fp, color(WT_STATUS_HEADER, s), "## ");
@@ -1819,7 +1820,9 @@ static void wt_shortstatus_print_tracking(struct wt_status *s)
 
 	color_fprintf(s->fp, branch_color_local, "%s", branch_name);
 
-	if (stat_tracking_info(branch, &num_ours, &num_theirs, &base) < 0) {
+	sti = stat_tracking_info(branch, &num_ours, &num_theirs, &base,
+				 s->ahead_behind_flags);
+	if (sti < 0) {
 		if (!base)
 			goto conclude;
 
@@ -1831,12 +1834,14 @@ static void wt_shortstatus_print_tracking(struct wt_status *s)
 	color_fprintf(s->fp, branch_color_remote, "%s", short_base);
 	free(short_base);
 
-	if (!upstream_is_gone && !num_ours && !num_theirs)
+	if (!upstream_is_gone && !sti)
 		goto conclude;
 
 	color_fprintf(s->fp, header_color, " [");
 	if (upstream_is_gone) {
 		color_fprintf(s->fp, header_color, LABEL(N_("gone")));
+	} else if (s->ahead_behind_flags == AHEAD_BEHIND_QUICK) {
+		color_fprintf(s->fp, header_color, LABEL(N_("different")));
 	} else if (!num_ours) {
 		color_fprintf(s->fp, header_color, LABEL(N_("behind ")));
 		color_fprintf(s->fp, branch_color_remote, "%d", num_theirs);
@@ -1893,7 +1898,8 @@ static void wt_porcelain_print(struct wt_status *s)
  *    # branch.oid <commit><eol>
  *    # branch.head <head><eol>
  *   [# branch.upstream <upstream><eol>
- *   [# branch.ab +<ahead> -<behind><eol>]]
+ *   [# branch.ab +<ahead> -<behind><eol>]
+ *   [# branch.equal <equal><eol>]]
  *
  *      <commit> ::= the current commit hash or the the literal
  *                   "(initial)" to indicate an initialized repo
@@ -1911,12 +1917,16 @@ static void wt_porcelain_print(struct wt_status *s)
  *      <behind> ::= integer behind value, when upstream set
  *                   and commit is present.
  *
+ *       <equal> ::= literal string "eq" or "neq".
  *
  * The end-of-line is defined by the -z flag.
  *
  *                 <eol> ::= NUL when -z,
  *                           LF when NOT -z.
  *
+ * When an upstream is set and present, the 'branch.ab' line will
+ * be printed when the ahead_behind_flags are set to _FULL and
+ * the 'branch.equal' line will be printed when set to _QUICK.
  */
 static void wt_porcelain_v2_print_tracking(struct wt_status *s)
 {
@@ -1924,7 +1934,7 @@ static void wt_porcelain_v2_print_tracking(struct wt_status *s)
 	const char *base;
 	const char *branch_name;
 	struct wt_status_state state;
-	int ab_info, nr_ahead, nr_behind;
+	int sti, nr_ahead, nr_behind;
 	char eol = s->null_termination ? '\0' : '\n';
 
 	memset(&state, 0, sizeof(state));
@@ -1956,14 +1966,24 @@ static void wt_porcelain_v2_print_tracking(struct wt_status *s)
 		/* Lookup stats on the upstream tracking branch, if set. */
 		branch = branch_get(branch_name);
 		base = NULL;
-		ab_info = (stat_tracking_info(branch, &nr_ahead, &nr_behind, &base) == 0);
+		sti = stat_tracking_info(branch, &nr_ahead, &nr_behind,
+					 &base, s->ahead_behind_flags);
 		if (base) {
 			base = shorten_unambiguous_ref(base, 0);
 			fprintf(s->fp, "# branch.upstream %s%c", base, eol);
 			free((char *)base);
 
-			if (ab_info)
-				fprintf(s->fp, "# branch.ab +%d -%d%c", nr_ahead, nr_behind, eol);
+			if (sti >= 0) {
+				if (s->ahead_behind_flags == AHEAD_BEHIND_FULL)
+					fprintf(s->fp, "# branch.ab +%d -%d%c",
+						nr_ahead, nr_behind, eol);
+				else if (s->ahead_behind_flags == AHEAD_BEHIND_QUICK)
+					fprintf(s->fp, "# branch.equal %s%c",
+						sti ? "neq" : "eq", eol);
+				else
+					BUG("invalid ahead_behind_flag '%d'",
+					    s->ahead_behind_flags);
+			}
 		}
 	}
 
