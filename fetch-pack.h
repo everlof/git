@@ -4,6 +4,7 @@
 #include "string-list.h"
 #include "run-command.h"
 #include "protocol.h"
+#include "list-objects-filter-options.h"
 
 struct oid_array;
 
@@ -13,6 +14,7 @@ struct fetch_pack_args {
 	int depth;
 	const char *deepen_since;
 	const struct string_list *deepen_not;
+	struct list_objects_filter_options filter_options;
 	unsigned deepen_relative:1;
 	unsigned quiet:1;
 	unsigned keep_pack:1;
