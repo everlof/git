@@ -55,6 +55,8 @@ int cmd_fetch_pack(int argc, const char **argv, const char *prefix)
 	struct string_list deepen_not = STRING_LIST_INIT_DUP;
 	struct packet_reader reader;
 
+	fetch_if_missing = 0;
+
 	packet_trace_identity("fetch-pack");
 
 	memset(&args, 0, sizeof(args));
@@ -143,6 +145,14 @@ int cmd_fetch_pack(int argc, const char **argv, const char *prefix)
 		}
 		if (!strcmp("--update-shallow", arg)) {
 			args.update_shallow = 1;
+			continue;
+		}
+		if (!strcmp("--from-promisor", arg)) {
+			args.from_promisor = 1;
+			continue;
+		}
+		if (!strcmp("--no-dependents", arg)) {
+			args.no_dependents = 1;
 			continue;
 		}
 		usage(fetch_pack_usage);
