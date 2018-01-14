@@ -271,7 +271,7 @@ extern int commit_tree_extended(const char *msg, size_t msg_len,
 				const unsigned char *tree,
 				struct commit_list *parents, unsigned char *ret,
 				const char *author, const char *sign_commit,
-				struct commit_extra_header *);
+				struct commit_extra_header *, char *sha1_prefix);
 
 extern struct commit_extra_header *read_commit_extra_headers(struct commit *, const char **);
 
